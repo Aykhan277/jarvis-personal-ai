@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -703,6 +704,7 @@ async def prometheus_metrics(request: Request):
 # ---- WebSocket streaming routes ----
 
 websocket_router = APIRouter(tags=["websocket"])
+_voice_session_lock = threading.Lock()
 _SYNC_STREAM_END = object()
 
 
@@ -916,6 +918,215 @@ async def websocket_chat_stream(websocket: WebSocket):
                 )
     except WebSocketDisconnect:
         pass  # Client disconnected — nothing to clean up
+
+
+@websocket_router.websocket("/v1/voice/stream")
+async def voice_stream(websocket: WebSocket):
+    """Hands-free voice session: wake word -> recording -> transcription."""
+
+    from openjarvis.server.auth_middleware import authenticate_websocket
+    from openjarvis.speech.wake_word import WakeWordDetector
+    from openjarvis.speech.voice_io import record_until_silence
+
+    expected_key = getattr(websocket.app.state, "api_key", "")
+    authorized, subprotocol = authenticate_websocket(
+        websocket, expected_key
+    )
+
+    if not authorized:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept(subprotocol=subprotocol)
+
+    # Only one session can own the microphone at a time.
+    if not _voice_session_lock.acquire(blocking=False):
+        await websocket.send_json({
+            "type": "error",
+            "message": "Another voice session is already active.",
+        })
+        await websocket.close(code=1013)
+        return
+
+    stop_event = threading.Event()
+    resume_event = asyncio.Event()
+    ack_event = asyncio.Event()
+
+    async def receive_controls():
+        """Receive stop/resume commands while microphone work runs."""
+        try:
+            while not stop_event.is_set():
+                message = await websocket.receive_json()
+                action = message.get("action")
+
+                if action == "stop":
+                    stop_event.set()
+                    resume_event.set()
+                    ack_event.set()
+                    return
+
+                if action == "resume":
+                    resume_event.set()
+                    
+                if action == "ack_done":
+                    ack_event.set()
+
+        except WebSocketDisconnect:
+            stop_event.set()
+            resume_event.set()
+            ack_event.set()
+        except Exception as exc:
+            logger.warning("Voice control receiver stopped: %s", exc)
+            stop_event.set()
+            resume_event.set()
+            ack_event.set()
+
+    receiver_task = None
+
+    try:
+        backend = getattr(
+            websocket.app.state, "speech_backend", None
+        )
+
+        if backend is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Speech recognition backend is unavailable.",
+            })
+            return
+
+        receiver_task = asyncio.create_task(receive_controls())
+
+        # Load the wake-word model outside the event loop.
+        detector = await asyncio.to_thread(
+            WakeWordDetector,
+            device=1,
+            threshold=0.35,
+            rearm_threshold=0.05,
+            rearm_seconds=1.0,
+        )
+
+        await websocket.send_json({"type": "listening"})
+        
+        wake_word_required = True
+        
+        while not stop_event.is_set():
+
+         
+            # Require wake word only when the session starts.
+            if wake_word_required:
+                detected = await asyncio.to_thread(
+                    detector.wait_for_wake_word,
+                    stop_event,
+                )
+
+                if not detected or stop_event.is_set():
+                    break
+
+                ack_event.clear()
+
+                await websocket.send_json({
+                    "type": "wake_detected"
+                })
+
+                await ack_event.wait()
+
+                if stop_event.is_set():
+                    break
+
+                wake_word_required = False    
+              
+
+            # 2. Record speech until silence.
+            await websocket.send_json({
+                "type": "recording"
+            })
+
+            audio_bytes = await asyncio.to_thread(
+                record_until_silence,
+                stop_event=stop_event,
+            )
+
+            if stop_event.is_set():
+                break
+
+            if not audio_bytes:
+                await websocket.send_json({
+                    "type": "listening"
+                })
+                continue
+
+            # 3. Transcribe the recorded audio.
+            await websocket.send_json({
+                "type": "transcribing"
+            })
+
+            result = await asyncio.to_thread(
+                backend.transcribe,
+                audio_bytes,
+                format="wav",
+                language=None,
+            )
+
+            if stop_event.is_set():
+                break
+
+            transcript = (result.text or "").strip()
+
+            # 4. Send the recognized text to the frontend.
+            if transcript:
+                resume_event.clear()
+
+                await websocket.send_json({
+                    "type": "transcript",
+                    "text": transcript,
+                    "language": result.language,
+                    "confidence": result.confidence,
+                    "duration_seconds": result.duration_seconds,
+                })
+
+                # 5. Wait until the frontend finishes processing
+                # the message and TTS playback.
+                await websocket.send_json({
+                    "type": "paused"
+                })
+
+                await resume_event.wait()
+
+                if stop_event.is_set():
+                    break
+
+            await websocket.send_json({
+                "type": "listening"
+            })
+
+    except WebSocketDisconnect:
+        pass
+
+    except Exception as exc:
+        logger.exception("Voice WebSocket error")
+
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(exc),
+            })
+        except Exception:
+            pass
+
+    finally:
+        stop_event.set()
+        resume_event.set()
+        ack_event.set()
+
+        if receiver_task is not None:
+            receiver_task.cancel()
+            await asyncio.gather(
+                receiver_task,
+                return_exceptions=True,
+            )
+
+        _voice_session_lock.release()
 
 
 # ---- Learning routes ----

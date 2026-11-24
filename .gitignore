@@ -131,3 +131,8 @@ learning.db
 minion_logs/
 *.oj-debug.json
 oj-debug.*.json
+
+# Local development backups and build artifacts
+*.bak
+*.backup
+frontend/tsconfig.tsbuildinfo

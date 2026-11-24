@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import wave
+import threading
 from pathlib import Path
 
 _SAMPLE_RATE = 16000
@@ -33,6 +34,7 @@ def record_until_silence(
     silence_seconds: float = _SILENCE_SECONDS,
     startup_silence_seconds: float = _STARTUP_SILENCE_SECONDS,
     max_seconds: float = _MAX_RECORD_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> bytes:
     """Record from the default microphone until silence is detected.
 
@@ -56,6 +58,8 @@ def record_until_silence(
     silence_count = 0
     has_speech = False
 
+
+                
     with sd.RawInputStream(
         samplerate=sample_rate,
         channels=_CHANNELS,
@@ -63,6 +67,9 @@ def record_until_silence(
         blocksize=_CHUNK,
     ) as stream:
         for _ in range(max_chunks):
+            if stop_event is not None and stop_event.is_set():
+                break
+
             raw, _ = stream.read(_CHUNK)
             data = bytes(raw)
             frames.append(data)

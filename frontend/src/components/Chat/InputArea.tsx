@@ -11,6 +11,7 @@ import {
   resolveChatEngine,
 } from '../../lib/chat-telemetry';
 import { MicButton } from './MicButton';
+import { unlockTtsPlayback } from '../../lib/tts';
 import { useSpeech } from '../../hooks/useSpeech';
 import type {
   ChatMessage,
@@ -79,10 +80,23 @@ function useResearchCorpusSync(enabled: boolean): {
   return state;
 }
 
-export function InputArea() {
+type InputAreaProps = {
+  variant?: 'default' | 'hud';
+  onSpeechStateChange?: (state: 'idle' | 'recording' | 'transcribing') => void;
+  externalMessage?: string | null;
+  handsfreeActive?: boolean;
+};
+
+export function InputArea({
+  variant = 'default',
+  onSpeechStateChange,
+  externalMessage,
+  handsfreeActive = false,
+}: InputAreaProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastExternalMessageRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const activeId = useAppStore((s) => s.activeId);
@@ -110,6 +124,9 @@ export function InputArea() {
     startRecording,
     stopRecording,
   } = useSpeech();
+  useEffect(() => {
+    onSpeechStateChange?.(speechState);
+  }, [speechState, onSpeechStateChange]);
 
   // Abort in-flight stream when the user switches models mid-generation.
   // This prevents errors from trying to continue a stream with a stale model.
@@ -170,16 +187,24 @@ export function InputArea() {
     }
     resetStream();
   }, [resetStream]);
+  
 
-  const sendMessage = useCallback(async () => {
-    const content = input.trim();
+ 
+  
+
+  const sendMessage = useCallback(async (voiceContent?: string) => {
+    unlockTtsPlayback();
+
+    const content = (voiceContent ?? input).trim();
     if (!content || streamState.isStreaming) return;
     if (!selectedModel) {
       toast.error('Pick a model first (⌘K)');
       return;
     }
 
-    setInput('');
+    if (voiceContent === undefined) {
+      setInput('');
+    }
 
     let convId = activeId;
     if (!convId) {
@@ -554,6 +579,19 @@ export function InputArea() {
     maxTokens,
   ]);
 
+  useEffect(() => {
+    const message = externalMessage?.trim();
+
+    if (!message) return;
+    if (lastExternalMessageRef.current === message) return;
+    if (streamState.isStreaming) return;
+
+    lastExternalMessageRef.current = message;
+
+    console.log('[Jarvis InputArea] Sending voice transcript once:', message);
+    void sendMessage(message);
+  }, [externalMessage, streamState.isStreaming, sendMessage]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -610,8 +648,14 @@ export function InputArea() {
           onKeyDown={handleKeyDown}
           placeholder={selectedModel ? 'Message OpenJarvis...' : 'Pick a model first (⌘K)...'}
           rows={1}
-          className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed"
-          style={{ color: 'var(--color-text)', maxHeight: '200px' }}
+          className={`flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed ${
+            variant === 'hud' ? 'text-cyan-100 placeholder:text-cyan-700' : ''
+          }`}
+          style={{
+            color: variant === 'hud' ? '#cffafe' : 'var(--color-text)',
+            maxHeight: '200px',
+          }}
+                    
           disabled={streamState.isStreaming || modelLoading}
         />
         {isCurrentChatStreaming ? (
@@ -628,11 +672,11 @@ export function InputArea() {
             <MicButton
               state={speechState}
               onClick={handleMicClick}
-              disabled={micDisabled}
+              disabled={micDisabled || handsfreeActive}
               reason={micReason}
             />
             <button
-              onClick={sendMessage}
+              onClick={() => sendMessage()}
               disabled={streamState.isStreaming || !input.trim() || modelLoading || !selectedModel}
               title={selectedModel ? 'Send message' : 'Pick a model first (⌘K)'}
               className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer disabled:opacity-30 disabled:cursor-default"

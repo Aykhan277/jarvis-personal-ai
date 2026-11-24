@@ -17,6 +17,7 @@ import { OptInModal } from './components/OptInModal';
 import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
 import { offerAnalyticsChoice } from './lib/analytics-invitation';
+import { JarvisHUD } from './components/JarvisHUD/JarvisHUD';
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(!isTauri());
@@ -192,6 +193,10 @@ export default function App() {
     <>
       <UpdateChecker />
       <Routes>
+        {/* HUD must stay outside the standard Layout */}
+        <Route path="hud" element={<JarvisHUD />} />
+
+        {/* Standard application routes */}
         <Route element={<Layout />}>
           <Route index element={<ChatPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
@@ -202,6 +207,7 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
         </Route>
       </Routes>
+  
       <Toaster position="bottom-right" />
       {commandPaletteOpen && <CommandPalette />}
       {optInModalOpen && (

@@ -52,6 +52,7 @@ dependencies = [
     # IANA time-zone fallback for Windows and minimal container images.
     "tzdata>=2025.3",
     "websockets>=15.0.1",
+    "openwakeword>=0.6.0",
 ]
 
 [project.optional-dependencies]

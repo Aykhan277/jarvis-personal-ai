@@ -35,6 +35,25 @@ let objectUrl: string | null = null;
 let controller: AbortController | null = null;
 let token = 0;
 let healthProbe: Promise<void> | null = null;
+let audioUnlocked = false;
+
+export function unlockTtsPlayback(): void {
+  if (audioUnlocked) return;
+
+  const silentWav =
+    'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+
+  const el = new Audio(silentWav);
+  el.volume = 0;
+
+  void el.play().then(() => {
+    audioUnlocked = true;
+    el.pause();
+    el.src = '';
+  }).catch((err) => {
+    console.warn('[TTS] Audio unlock failed:', err);
+  });
+}
 
 /** Only a stream ending in the active conversation may trigger autoplay. */
 export function shouldAutoplayFinishedReply(

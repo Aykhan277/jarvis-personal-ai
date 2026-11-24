@@ -14,8 +14,14 @@ export function useSpeech() {
   // Check if speech backend is available on mount
   useEffect(() => {
     fetchSpeechHealth()
-      .then((health) => setAvailable(health.available))
-      .catch(() => setAvailable(false));
+      .then((health) => {
+        console.log('SPEECH HEALTH:', health);
+        setAvailable(health.available);
+      })
+      .catch((err) => {
+        console.error('SPEECH HEALTH ERROR:', err);
+        setAvailable(false);
+      });
   }, []);
 
   const startRecording = useCallback(async (): Promise<void> => {
